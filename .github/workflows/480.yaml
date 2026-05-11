@@ -33,6 +33,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: حذف فایل‌های موقتی قدیمی
+        run: |
+          rm -f ./*.mp4 ./*.webm ./*.mkv ./*.mp3 ./*.webp ./*.jpg ./*.png 2>/dev/null || true
+      
       - name: Setup yt-dlp
         uses: AnimMouse/setup-yt-dlp@v3
       
@@ -53,7 +57,7 @@ jobs:
       
       - name: دانلود و انکد ویدیوها
         run: |
-          mkdir -p downloads encoded
+          mkdir -p encoded_temp
           RANDOM_ID=$((RANDOM % 90000 + 10000))
           echo "RANDOM_ID=$RANDOM_ID" >> $GITHUB_ENV
           
@@ -65,25 +69,23 @@ jobs:
               return
             fi
             
-            # استخراج لینک و پارامترها
+            # استخراج لینک
             URL=$(echo "$INPUT" | grep -oP '(https?://\S+)' | head -n1)
             if [ -z "$URL" ]; then
               echo "❌ لینک معتبر نیست: $INPUT"
               return
             fi
             
-            # تنظیمات پیش‌فرض
+            # تنظیمات
             QUALITY="best"
             AUDIO_ONLY="false"
-            SUBTITLES="false"
             
             if echo "$INPUT" | grep -qi "quality: *1080"; then QUALITY="1080"; fi
             if echo "$INPUT" | grep -qi "quality: *720";  then QUALITY="720"; fi
             if echo "$INPUT" | grep -qi "quality: *480";  then QUALITY="480"; fi
             if echo "$INPUT" | grep -qi "audio-only: *true"; then AUDIO_ONLY="true"; fi
-            if echo "$INPUT" | grep -qi "subtitles: *true"; then SUBTITLES="true"; fi
             
-            # دانلود با yt-dlp (مثل کد اون یارو)
+            # دانلود با yt-dlp (حفظ اسم اصلی)
             CMD="yt-dlp --concurrent-fragments 8 --retries 10 --fragment-retries 10"
             
             if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
@@ -93,6 +95,13 @@ jobs:
             if [ "$AUDIO_ONLY" = "true" ]; then
               CMD="$CMD -x --audio-format mp3 --audio-quality 0"
               EXT="mp3"
+              CMD="$CMD --output '%(title)s [%(id)s].%(ext)s'"
+              eval "$CMD \"$URL\""
+              # پیدا کردن فایل دانلود شده
+              DOWNLOADED_FILE=$(ls *.mp3 2>/dev/null | head -n1)
+              if [ -n "$DOWNLOADED_FILE" ]; then
+                mv "$DOWNLOADED_FILE" "encoded_temp/Encode_Nova_vid${RANDOM_ID}_$NUM.$EXT"
+              fi
             else
               case $QUALITY in
                 1080) CMD="$CMD -f 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'" ;;
@@ -101,45 +110,37 @@ jobs:
                 *)    CMD="$CMD -f 'bestvideo+bestaudio/best'" ;;
               esac
               CMD="$CMD --merge-output-format mp4"
-              EXT="mp4"
-            fi
-            
-            CMD="$CMD --embed-metadata --embed-thumbnail --restrict-filenames"
-            CMD="$CMD --output 'downloads/input_$NUM.%(ext)s'"
-            
-            echo "🎬 دانلود ویدیو $NUM: $URL"
-            eval "$CMD \"$URL\""
-            
-            DOWNLOADED_FILE=$(ls downloads/input_$NUM.* 2>/dev/null | head -n1)
-            if [ -z "$DOWNLOADED_FILE" ]; then
-              echo "❌ دانلود ویدیو $NUM ناموفق"
-              return
-            fi
-            
-            # انکد به 480p (برای ویدیوها)
-            if [ "$AUDIO_ONLY" = "false" ] && [ "$EXT" = "mp4" ]; then
+              CMD="$CMD --output '%(title)s [%(id)s].%(ext)s'"
+              
+              echo "🎬 دانلود ویدیو $NUM: $URL"
+              eval "$CMD \"$URL\""
+              
+              # پیدا کردن فایل دانلود شده
+              DOWNLOADED_FILE=$(ls *.mp4 2>/dev/null | head -n1)
+              if [ -z "$DOWNLOADED_FILE" ]; then
+                echo "❌ دانلود ویدیو $NUM ناموفق"
+                return
+              fi
+              
               echo "🔄 انکد ویدیو $NUM به 480p"
               ffmpeg -i "$DOWNLOADED_FILE" \
                 -c:v libx264 -preset veryfast -crf 26 \
                 -vf "scale=854:480" \
                 -c:a aac -b:a 96k \
-                "encoded/Encode_Nova_vid${RANDOM_ID}_$NUM.mp4"
+                "encoded_temp/Encode_Nova_vid${RANDOM_ID}_$NUM.mp4"
               rm -f "$DOWNLOADED_FILE"
-            else
-              mv "$DOWNLOADED_FILE" "encoded/Encode_Nova_vid${RANDOM_ID}_$NUM.$EXT"
             fi
             
             echo "✅ ویدیو $NUM پردازش شد"
           }
           
-          # پردازش ۵ لینک
           process_video "${{ inputs.link1 }}" "1"
           process_video "${{ inputs.link2 }}" "2"
           process_video "${{ inputs.link3 }}" "3"
           process_video "${{ inputs.link4 }}" "4"
           process_video "${{ inputs.link5 }}" "5"
           
-          cd encoded
+          cd encoded_temp
           COUNT=$(ls * 2>/dev/null | wc -l)
           if [ $COUNT -eq 0 ]; then
             echo "❌ هیچ فایلی پردازش نشد"
@@ -152,8 +153,8 @@ jobs:
         run: |
           TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
           echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
-          7z a -v95m -mx3 "archive_$TIMESTAMP.7z" encoded/
-          rm -rf encoded
+          7z a -v95m -mx3 "archive_$TIMESTAMP.7z" encoded_temp/
+          rm -rf encoded_temp
       
       - name: ساخت فایل لینک (فقط لینک)
         run: |
