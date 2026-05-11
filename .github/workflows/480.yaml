@@ -124,9 +124,10 @@ jobs:
               
               echo "🔄 انکد ویدیو $NUM به 480p"
               ffmpeg -i "$DOWNLOADED_FILE" \
-                -c:v libx264 -preset veryfast -crf 26 \
+                -c:v libx264 -preset veryfast -crf 28 \
                 -vf "scale=854:480" \
-                -c:a aac -b:a 96k \
+                -vsync 0 \
+                -c:a copy \
                 "encoded_temp/Encode_Nova_vid${RANDOM_ID}_$NUM.mp4"
               rm -f "$DOWNLOADED_FILE"
             fi
@@ -156,7 +157,7 @@ jobs:
           7z a -v95m -mx3 "archive_$TIMESTAMP.7z" encoded_temp/
           rm -rf encoded_temp
       
-      - name: ساخت فایل لینک (فقط لینک)
+      - name: ساخت فایل لینک
         run: |
           LINKS_FILE="links_${{ env.RANDOM_ID }}.txt"
           for file in archive_${{ env.TIMESTAMP }}.7z.*; do
@@ -177,4 +178,4 @@ jobs:
       
       - name: نمایش لینک فایل
         run: |
-          echo "✅ https://raw.githubusercontent.com/${{ github.repository }}/main/${{ env.LINKS_FILE }}"
+          echo "✅ https://raw.githubusercontent.com/${{ github.repository }}/main/${{ env.LINKS_FILE }}""
