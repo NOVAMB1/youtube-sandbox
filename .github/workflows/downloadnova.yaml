@@ -1,0 +1,162 @@
+name: یوتیوب دانلودر + پارت بندی (بدون انکد)
+
+on:
+  workflow_dispatch:
+    inputs:
+      link1:
+        description: 'لینک یوتیوب 1'
+        required: false
+        type: string
+      link2:
+        description: 'لینک یوتیوب 2'
+        required: false
+        type: string
+      link3:
+        description: 'لینک یوتیوب 3'
+        required: false
+        type: string
+      link4:
+        description: 'لینک یوتیوب 4'
+        required: false
+        type: string
+      link5:
+        description: 'لینک یوتیوب 5'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  download_and_upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup yt-dlp
+        uses: AnimMouse/setup-yt-dlp@v3
+      
+      - name: Setup YouTube Cookies
+        run: |
+          mkdir -p ~/.cache/yt-dlp/youtube
+          if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
+            echo "${{ secrets.YOUTUBE_COOKIES }}" > ~/.cache/yt-dlp/youtube/cookies.txt
+            echo "✅ Cookies installed"
+          else
+            echo "⚠️ No cookies found"
+          fi
+      
+      - name: نصب 7z
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+      
+      - name: دانلود ویدیوها
+        run: |
+          mkdir -p downloads
+          RANDOM_ID=$((RANDOM % 90000 + 10000))
+          echo "RANDOM_ID=$RANDOM_ID" >> $GITHUB_ENV
+          
+          process_video() {
+            INPUT="$1"
+            NUM="$2"
+            
+            if [ -z "$INPUT" ]; then
+              return
+            fi
+            
+            # استخراج لینک و پارامترها
+            URL=$(echo "$INPUT" | grep -oP '(https?://\S+)' | head -n1)
+            if [ -z "$URL" ]; then
+              echo "❌ لینک معتبر نیست: $INPUT"
+              return
+            fi
+            
+            # تنظیمات پیش‌فرض
+            QUALITY="best"
+            AUDIO_ONLY="false"
+            
+            if echo "$INPUT" | grep -qi "quality: *1080"; then QUALITY="1080"; fi
+            if echo "$INPUT" | grep -qi "quality: *720";  then QUALITY="720"; fi
+            if echo "$INPUT" | grep -qi "quality: *480";  then QUALITY="480"; fi
+            if echo "$INPUT" | grep -qi "audio-only: *true"; then AUDIO_ONLY="true"; fi
+            
+            # دانلود با yt-dlp
+            CMD="yt-dlp --concurrent-fragments 8 --retries 10 --fragment-retries 10"
+            
+            if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
+              CMD="$CMD --cookies ~/.cache/yt-dlp/youtube/cookies.txt"
+            fi
+            
+            if [ "$AUDIO_ONLY" = "true" ]; then
+              CMD="$CMD -x --audio-format mp3 --audio-quality 0"
+              EXT="mp3"
+            else
+              case $QUALITY in
+                1080) CMD="$CMD -f 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'" ;;
+                720)  CMD="$CMD -f 'bestvideo[height<=720]+bestaudio/best[height<=720]'" ;;
+                480)  CMD="$CMD -f 'bestvideo[height<=480]+bestaudio/best[height<=480]'" ;;
+                *)    CMD="$CMD -f 'bestvideo+bestaudio/best'" ;;
+              esac
+              CMD="$CMD --merge-output-format mp4"
+              EXT="mp4"
+            fi
+            
+            CMD="$CMD --embed-metadata --embed-thumbnail --restrict-filenames"
+            CMD="$CMD --output 'downloads/Encode_Nova_vid${RANDOM_ID}_$NUM.%(ext)s'"
+            
+            echo "🎬 دانلود ویدیو $NUM: $URL"
+            eval "$CMD \"$URL\""
+            
+            if [ ! -f "downloads/Encode_Nova_vid${RANDOM_ID}_$NUM.$EXT" ]; then
+              echo "❌ دانلود ویدیو $NUM ناموفق"
+              return
+            fi
+            
+            echo "✅ ویدیو $NUM دانلود شد"
+          }
+          
+          process_video "${{ inputs.link1 }}" "1"
+          process_video "${{ inputs.link2 }}" "2"
+          process_video "${{ inputs.link3 }}" "3"
+          process_video "${{ inputs.link4 }}" "4"
+          process_video "${{ inputs.link5 }}" "5"
+          
+          cd downloads
+          COUNT=$(ls * 2>/dev/null | wc -l)
+          if [ $COUNT -eq 0 ]; then
+            echo "❌ هیچ فایلی دانلود نشد"
+            exit 1
+          fi
+          echo "✅ تعداد فایل‌های دانلود شده: $COUNT"
+          cd ..
+      
+      - name: فشرده‌سازی و پارت بندی
+        run: |
+          TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+          echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+          7z a -v95m -mx3 "archive_$TIMESTAMP.7z" downloads/
+          rm -rf downloads
+      
+      - name: ساخت فایل لینک (فقط لینک)
+        run: |
+          LINKS_FILE="links_${{ env.RANDOM_ID }}.txt"
+          for file in archive_${{ env.TIMESTAMP }}.7z.*; do
+            if [ -f "$file" ]; then
+              echo "https://raw.githubusercontent.com/${{ github.repository }}/main/$file" >> $LINKS_FILE
+            fi
+          done
+          echo "LINKS_FILE=$LINKS_FILE" >> $GITHUB_ENV
+      
+      - name: آپلود به مخزن
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add archive_${{ env.TIMESTAMP }}.7z.*
+          git add ${{ env.LINKS_FILE }}
+          git commit -m "upload downloaded files" || echo "nothing to commit"
+          git push
+      
+      - name: نمایش لینک فایل
+        run: |
+          echo "✅ https://raw.githubusercontent.com/${{ github.repository }}/main/${{ env.LINKS_FILE }}"
