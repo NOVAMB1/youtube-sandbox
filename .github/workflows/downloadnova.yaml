@@ -33,6 +33,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: حذف فایل‌های موقتی قدیمی
+        run: |
+          rm -f ./*.mp4 ./*.webm ./*.mkv ./*.mp3 2>/dev/null || true
+      
       - name: Setup yt-dlp
         uses: AnimMouse/setup-yt-dlp@v3
       
@@ -53,11 +57,10 @@ jobs:
       
       - name: دانلود ویدیوها
         run: |
-          mkdir -p downloads
           RANDOM_ID=$((RANDOM % 90000 + 10000))
           echo "RANDOM_ID=$RANDOM_ID" >> $GITHUB_ENV
           
-          process_video() {
+          download_video() {
             INPUT="$1"
             NUM="$2"
             
@@ -65,14 +68,14 @@ jobs:
               return
             fi
             
-            # استخراج لینک و پارامترها
+            # استخراج لینک
             URL=$(echo "$INPUT" | grep -oP '(https?://\S+)' | head -n1)
             if [ -z "$URL" ]; then
               echo "❌ لینک معتبر نیست: $INPUT"
               return
             fi
             
-            # تنظیمات پیش‌فرض
+            # تنظیمات
             QUALITY="best"
             AUDIO_ONLY="false"
             
@@ -81,7 +84,7 @@ jobs:
             if echo "$INPUT" | grep -qi "quality: *480";  then QUALITY="480"; fi
             if echo "$INPUT" | grep -qi "audio-only: *true"; then AUDIO_ONLY="true"; fi
             
-            # دانلود با yt-dlp
+            # ساخت دستور yt-dlp
             CMD="yt-dlp --concurrent-fragments 8 --retries 10 --fragment-retries 10"
             
             if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
@@ -103,40 +106,34 @@ jobs:
             fi
             
             CMD="$CMD --embed-metadata --embed-thumbnail --restrict-filenames"
-            CMD="$CMD --output 'downloads/Encode_Nova_vid${RANDOM_ID}_$NUM.%(ext)s'"
+            # ذخیره مستقیم در ریشه (همون فولدر فعلی)
+            CMD="$CMD --output '%(title)s [%(id)s].%(ext)s'"
             
             echo "🎬 دانلود ویدیو $NUM: $URL"
             eval "$CMD \"$URL\""
             
-            if [ ! -f "downloads/Encode_Nova_vid${RANDOM_ID}_$NUM.$EXT" ]; then
-              echo "❌ دانلود ویدیو $NUM ناموفق"
-              return
-            fi
-            
             echo "✅ ویدیو $NUM دانلود شد"
           }
           
-          process_video "${{ inputs.link1 }}" "1"
-          process_video "${{ inputs.link2 }}" "2"
-          process_video "${{ inputs.link3 }}" "3"
-          process_video "${{ inputs.link4 }}" "4"
-          process_video "${{ inputs.link5 }}" "5"
-          
-          cd downloads
-          COUNT=$(ls * 2>/dev/null | wc -l)
-          if [ $COUNT -eq 0 ]; then
-            echo "❌ هیچ فایلی دانلود نشد"
-            exit 1
-          fi
-          echo "✅ تعداد فایل‌های دانلود شده: $COUNT"
-          cd ..
+          download_video "${{ inputs.link1 }}" "1"
+          download_video "${{ inputs.link2 }}" "2"
+          download_video "${{ inputs.link3 }}" "3"
+          download_video "${{ inputs.link4 }}" "4"
+          download_video "${{ inputs.link5 }}" "5"
       
-      - name: فشرده‌سازی و پارت بندی
+      - name: فشرده‌سازی و پارت بندی فایل‌های دانلودی
         run: |
           TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
           echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
-          7z a -v95m -mx3 "archive_$TIMESTAMP.7z" downloads/
-          rm -rf downloads
+          
+          # پاک کردن فایل‌های اضافی غیر ویدیویی
+          rm -f *.webp *.jpg *.png 2>/dev/null || true
+          
+          # فشرده‌سازی همه فایل‌های ویدیویی/صوتی
+          7z a -v95m -mx3 "archive_$TIMESTAMP.7z" *.mp4 *.mp3 *.mkv *.webm 2>/dev/null || echo "No files to archive"
+          
+          # حذف فایل‌های اصلی بعد از فشرده‌سازی
+          rm -f *.mp4 *.mp3 *.mkv *.webm 2>/dev/null || true
       
       - name: ساخت فایل لینک (فقط لینک)
         run: |
