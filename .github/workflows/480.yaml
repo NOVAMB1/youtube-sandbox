@@ -1,0 +1,175 @@
+name: یوتیوب دانلودر + انکد 480p
+
+on:
+  workflow_dispatch:
+    inputs:
+      link1:
+        description: 'لینک یوتیوب (مثال: yt-dlp: https://youtu.be/... quality: 720)'
+        required: false
+        type: string
+      link2:
+        description: 'لینک یوتیوب 2'
+        required: false
+        type: string
+      link3:
+        description: 'لینک یوتیوب 3'
+        required: false
+        type: string
+      link4:
+        description: 'لینک یوتیوب 4'
+        required: false
+        type: string
+      link5:
+        description: 'لینک یوتیوب 5'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: نصب ابزارها
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg p7zip-full
+          pip3 install yt-dlp
+      
+      - name: پردازش فایل‌ها
+        run: |
+          mkdir -p downloads encoded
+          RANDOM_ID=$((RANDOM % 90000 + 10000))
+          echo "RANDOM_ID=$RANDOM_ID" >> $GITHUB_ENV
+          
+          process_youtube() {
+            RAW_INPUT=$1
+            NUM=$2
+            
+            # استخراج لینک اصلی
+            URL=$(echo "$RAW_INPUT" | grep -oP '(https?://\S+)' | head -n1)
+            if [ -z "$URL" ]; then
+              echo "❌ لینک معتبر یافت نشد: $RAW_INPUT"
+              return
+            fi
+            
+            # تنظیمات پیش‌فرض
+            QUALITY="best"
+            PLAYLIST="--no-playlist"
+            AUDIO_ONLY="false"
+            SUBTITLES="false"
+            SPONSORBLOCK="true"
+            
+            # پارس کردن پارامترها
+            if echo "$RAW_INPUT" | grep -qi "quality: *1080"; then QUALITY="1080"; fi
+            if echo "$RAW_INPUT" | grep -qi "quality: *720";  then QUALITY="720"; fi
+            if echo "$RAW_INPUT" | grep -qi "quality: *480";  then QUALITY="480"; fi
+            if echo "$RAW_INPUT" | grep -qi "playlist: *true"; then PLAYLIST="--yes-playlist"; fi
+            if echo "$RAW_INPUT" | grep -qi "audio-only: *true"; then AUDIO_ONLY="true"; fi
+            if echo "$RAW_INPUT" | grep -qi "subtitles: *true"; then SUBTITLES="true"; fi
+            if echo "$RAW_INPUT" | grep -qi "sponsorblock: *false"; then SPONSORBLOCK="false"; fi
+            
+            echo "🎬 دانلود یوتیوب: $URL"
+            echo "⚙️ کیفیت: $QUALITY | صدا فقط: $AUDIO_ONLY | زیرنویس: $SUBTITLES"
+            
+            # ساخت دستور yt-dlp
+            CMD="yt-dlp --concurrent-fragments 8 --retries 10 --fragment-retries 10"
+            
+            if [ "$AUDIO_ONLY" = "true" ]; then
+              CMD="$CMD -x --audio-format mp3 --audio-quality 0"
+              EXT="mp3"
+            else
+              case $QUALITY in
+                1080) CMD="$CMD -f 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'" ;;
+                720)  CMD="$CMD -f 'bestvideo[height<=720]+bestaudio/best[height<=720]'" ;;
+                480)  CMD="$CMD -f 'bestvideo[height<=480]+bestaudio/best[height<=480]'" ;;
+                *)    CMD="$CMD -f 'bestvideo+bestaudio/best'" ;;
+              esac
+              CMD="$CMD --merge-output-format mp4"
+              EXT="mp4"
+            fi
+            
+            [ "$PLAYLIST" = "--yes-playlist" ] && CMD="$CMD --yes-playlist" || CMD="$CMD --no-playlist"
+            [ "$SUBTITLES" = "true" ] && CMD="$CMD --write-auto-sub --embed-subs"
+            [ "$SPONSORBLOCK" = "true" ] && CMD="$CMD --sponsorblock-remove all"
+            
+            CMD="$CMD --embed-metadata --embed-thumbnail --restrict-filenames"
+            CMD="$CMD --output 'downloads/input_$NUM.%(ext)s'"
+            
+            eval "$CMD \"$URL\""
+            
+            # پیدا کردن فایل دانلود شده
+            DOWNLOADED_FILE=$(ls downloads/input_$NUM.* 2>/dev/null | head -n1)
+            if [ -z "$DOWNLOADED_FILE" ]; then
+              echo "❌ دانلود ناموفق بود"
+              return
+            fi
+            
+            echo "✅ دانلود شد: $DOWNLOADED_FILE"
+            
+            # انکد به 480p (برای ویدیوها)
+            if [ "$AUDIO_ONLY" = "false" ] && [ "$EXT" = "mp4" ]; then
+              echo "🔄 انکد به 480p x264 crf 26 veryfast"
+              ffmpeg -i "$DOWNLOADED_FILE" \
+                -c:v libx264 -preset veryfast -crf 26 \
+                -vf "scale=854:480" \
+                -c:a aac -b:a 96k \
+                "encoded/Encode_Nova_vid${RANDOM_ID}_$NUM.mp4"
+              rm -f "$DOWNLOADED_FILE"
+            else
+              # فایل صوتی یا غیر ویدیویی بدون انکد منتقل میشه
+              mv "$DOWNLOADED_FILE" "encoded/Encode_Nova_vid${RANDOM_ID}_$NUM.$EXT"
+            fi
+          }
+          
+          # پردازش هر 5 لینک
+          [ -n "${{ inputs.link1 }}" ] && process_youtube "${{ inputs.link1 }}" "1"
+          [ -n "${{ inputs.link2 }}" ] && process_youtube "${{ inputs.link2 }}" "2"
+          [ -n "${{ inputs.link3 }}" ] && process_youtube "${{ inputs.link3 }}" "3"
+          [ -n "${{ inputs.link4 }}" ] && process_youtube "${{ inputs.link4 }}" "4"
+          [ -n "${{ inputs.link5 }}" ] && process_youtube "${{ inputs.link5 }}" "5"
+          
+          cd encoded
+          COUNT=$(ls * 2>/dev/null | wc -l)
+          if [ $COUNT -eq 0 ]; then
+            echo "❌ هیچ فایلی پردازش نشد"
+            exit 1
+          fi
+          echo "✅ تعداد فایل‌های نهایی: $COUNT"
+          cd ..
+      
+      - name: فشرده‌سازی و پارت بندی
+        run: |
+          TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+          echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+          7z a -v95m -mx3 "archive_$TIMESTAMP.7z" encoded/
+          rm -rf encoded
+      
+      - name: ساخت فایل لینک (فقط لینک)
+        run: |
+          LINKS_FILE="links_${{ env.RANDOM_ID }}.txt"
+          
+          # فقط لینک‌ها، بدون هیچ متن اضافه
+          for file in archive_${{ env.TIMESTAMP }}.7z.*; do
+            if [ -f "$file" ]; then
+              echo "https://raw.githubusercontent.com/${{ github.repository }}/main/$file" >> $LINKS_FILE
+            fi
+          done
+          
+          echo "LINKS_FILE=$LINKS_FILE" >> $GITHUB_ENV
+      
+      - name: آپلود به مخزن
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add archive_${{ env.TIMESTAMP }}.7z.*
+          git add ${{ env.LINKS_FILE }}
+          git commit -m "upload encoded files" || echo "nothing to commit"
+          git push
+      
+      - name: نمایش لینک فایل
+        run: |
+          echo "✅ https://raw.githubusercontent.com/${{ github.repository }}/main/${{ env.LINKS_FILE }}"
