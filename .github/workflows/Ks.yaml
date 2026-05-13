@@ -6,8 +6,20 @@ on:
       search_query:
         description: '🔍 چی رو سرچ کنم؟'
         required: true
-        default: 'eminem'
+        default: ''
         type: string
+      sort_by:
+        description: '📊 مرتب‌سازی بر اساس'
+        required: true
+        default: 'relevance'
+        type: choice
+        options:
+          - 'relevance'
+          - 'views'
+          - 'likes'
+          - 'date_newest'
+          - 'date_oldest'
+          - 'rating'
       clear_old:
         description: '🗑 پاک کردن کامل فایل‌های قبلی'
         required: true
@@ -50,22 +62,38 @@ jobs:
       - name: Clean old files
         if: github.event.inputs.clear_old == 'true'
         run: |
-          rm -rf "YouTube Search" thumbnails
-          mkdir -p "YouTube Search" thumbnails
+          rm -rf "YouTube Search"
+          mkdir -p "YouTube Search/thumbnails"
       
       - name: Create directories
         run: |
-          mkdir -p "YouTube Search" thumbnails
+          mkdir -p "YouTube Search/thumbnails"
       
       - name: Search and download thumbnails
         run: |
           SEARCH="${{ github.event.inputs.search_query }}"
           MAX="${{ github.event.inputs.max_results }}"
+          SORT="${{ github.event.inputs.sort_by }}"
           
-          CMD="yt-dlp \"ytsearch${MAX}:${SEARCH}\" --dump-json --skip-download"
+          case "$SORT" in
+            views) SORT_PARAM="+view_count" ;;
+            likes) SORT_PARAM="+like_count" ;;
+            date_newest) SORT_PARAM="+upload_date" ;;
+            date_oldest) SORT_PARAM="-upload_date" ;;
+            rating) SORT_PARAM="+average_rating" ;;
+            *) SORT_PARAM="" ;;
+          esac
+          
+          if [ -n "$SORT_PARAM" ]; then
+            CMD="yt-dlp \"ytsearch${MAX}:${SEARCH}\" --dump-json --skip-download --format-sort \"$SORT_PARAM\""
+          else
+            CMD="yt-dlp \"ytsearch${MAX}:${SEARCH}\" --dump-json --skip-download"
+          fi
+          
           if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
             CMD="$CMD --cookies ~/.cache/yt-dlp/youtube/cookies.txt"
           fi
+          
           eval "$CMD > \"YouTube Search/results.json\""
           
           python3 << 'EOF'
@@ -82,7 +110,7 @@ jobs:
               if thumb:
                   ext = 'webp' if 'webp' in thumb.lower() else 'jpg'
                   try:
-                      urllib.request.urlretrieve(thumb, f"thumbnails/{vid}.{ext}")
+                      urllib.request.urlretrieve(thumb, f"YouTube Search/thumbnails/{vid}.{ext}")
                   except: pass
           
           with ThreadPoolExecutor(max_workers=10) as ex:
@@ -100,6 +128,7 @@ jobs:
           SEARCH="${{ github.event.inputs.search_query }}"
           RANDOM_NAME="${{ steps.random.outputs.filename }}"
           REPO="${{ github.repository }}"
+          SORT="${{ github.event.inputs.sort_by }}"
           
           python3 << EOF
           import json, os, glob
@@ -107,6 +136,7 @@ jobs:
           search_query = """${{ github.event.inputs.search_query }}"""
           random_name = """${{ steps.random.outputs.filename }}"""
           repo = """${{ github.repository }}"""
+          sort_by = """${{ github.event.inputs.sort_by }}"""
           md_file = f"YouTube Search/{random_name}.md"
           
           with open('YouTube Search/results.json') as f:
@@ -117,9 +147,18 @@ jobs:
                   try: os.remove(old)
                   except: pass
           
+          sort_names = {
+              'relevance': 'مرتبط‌ترین',
+              'views': 'بیشترین بازدید',
+              'likes': 'بیشترین لایک',
+              'date_newest': 'جدیدترین',
+              'date_oldest': 'قدیمی‌ترین',
+              'rating': 'بیشترین امتیاز'
+          }
+          
           md = f'''# 🎬 YouTube Search: {search_query}
           
-          **📋 {len(results)} نتیجه پیدا شد**
+          **📋 {len(results)} نتیجه • مرتب‌سازی: {sort_names.get(sort_by, sort_by)}**
           
           ---
           
@@ -132,12 +171,14 @@ jobs:
               url = v.get('webpage_url', '')
               views = v.get('view_count', 0)
               views_str = f"{views/1000000:.1f}M" if views>=1000000 else f"{views/1000:.1f}K" if views>=1000 else str(views)
+              likes = v.get('like_count', 0)
+              likes_str = f"{likes/1000:.1f}K" if likes>=1000 else str(likes)
               dur = v.get('duration', 0)
               dur_str = f"{dur//60}:{dur%60:02d}"
               
               thumb_path = None
               for ext in ['jpg', 'webp']:
-                  candidate = f"thumbnails/{vid}.{ext}"
+                  candidate = f"YouTube Search/thumbnails/{vid}.{ext}"
                   if os.path.exists(candidate):
                       thumb_path = candidate
                       break
@@ -149,7 +190,7 @@ jobs:
                   md += f'[![{title}](https://placehold.co/640x360?text=No+Thumbnail)]({url})\n\n'
               
               md += f'**{title}**\n\n'
-              md += f'👤 {channel} • 👁️ {views_str} views • ⏱️ {dur_str}\n\n'
+              md += f'👤 {channel} • 👁️ {views_str} views • 👍 {likes_str} likes • ⏱️ {dur_str}\n\n'
               md += f'🔗 [{url}]({url})\n\n'
               md += '---\n\n'
           
@@ -159,15 +200,15 @@ jobs:
           with open('YouTube Search/latest.txt', 'w') as f:
               f.write(f"{random_name}.md")
           
-          print(f"✅ {len(results)} result | {random_name}.md")
+          print(f"✅ {len(results)} result | {random_name}.md | Sort: {sort_by}")
           EOF
       
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "YouTube Search/" thumbnails/ -f
-          git commit -m "🔍 Search: ${{ github.event.inputs.search_query }}" || echo "No changes"
+          git add "YouTube Search/" -f
+          git commit -m "🔍 Search: ${{ github.event.inputs.search_query }} (Sort: ${{ github.event.inputs.sort_by }})" || echo "No changes"
           git push
       
       - name: Show link
