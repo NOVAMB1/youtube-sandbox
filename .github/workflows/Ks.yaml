@@ -4,10 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       search_query:
-        description: '🔍 چی رو سرچ کنم؟'
-        required: true
-        default: ''
-        type: string
+  description: '🔍 چی رو سرچ کنم؟'
+  required: true
+  type: string
       clear_old:
         description: '🗑 پاک کردن کامل فایل‌های قبلی'
         required: true
