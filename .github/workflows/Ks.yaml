@@ -1,40 +1,180 @@
-    - name: Generate Jupyter Notebook
-      run: |
-        SEARCH="${{ github.event.inputs.search_query }}"
-        RANDOM_NAME="search_$(date +%s).ipynb"
-        GITHUB_USER="${{ github.repository_owner }}"
-        REPO_NAME="${{ github.event.repository.name }}"
-        
-        python3 << EOF
-        import json, os, glob
-        
-        search_query = "${{ github.event.inputs.search_query }}"
-        random_name = "${{ steps.random.outputs.filename }}"
-        github_user = "${{ github.repository_owner }}"
-        repo_name = "${{ github.event.repository.name }}"
-        notebook_file = f"YouTube Search/{RANDOM_NAME}"
-        
-        with open('YouTube Search/results.json') as f:
-            results = [json.loads(l) for l in f]
-        
-        # حذف فایل‌های قدیمی
-        for old in glob.glob('YouTube Search/*.ipynb'):
-            if old != notebook_file:
-                try: os.remove(old)
-                except: pass
-        
-        # ساخت سلول‌های Notebook
-        cells = []
-        
-        # سلول عنوان
-        cells.append({
-            "cell_type": "markdown",
-            "metadata": {},
-            "source": [f"# 🎬 YouTube Search: {search_query}\\n\\n**{len(results)} نتیجه**\\n"]
-        })
-        
-        # سلول برای هر ویدیو
-        for v in results:
+name: YouTube Search
+
+on:
+  workflow_dispatch:
+    inputs:
+      search_query:
+        description: '🔍 چی رو سرچ کنم؟'
+        required: true
+        default: 'eminem'
+        type: string
+      clear_old:
+        description: '🗑 پاک کردن کامل فایل‌های قبلی'
+        required: false
+        default: true
+        type: boolean
+      max_results:
+        description: '📊 تعداد نتایج'
+        required: false
+        default: '30'
+        type: choice
+        options:
+          - '10'
+          - '20'
+          - '30'
+          - '40'
+          - '50'
+
+permissions:
+  contents: write
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup yt-dlp
+        uses: AnimMouse/setup-yt-dlp@v3
+      
+      - name: Setup YouTube Cookies
+        run: |
+          mkdir -p ~/.cache/yt-dlp/youtube
+          if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
+            echo "${{ secrets.YOUTUBE_COOKIES }}" > ~/.cache/yt-dlp/youtube/cookies.txt
+            echo "✅ Cookies installed"
+          else
+            echo "⚠️ No cookies found"
+          fi
+      
+      - name: Clean old files
+        if: github.event.inputs.clear_old == 'true'
+        run: |
+          rm -rf "YouTube Search" thumbnails
+          mkdir -p "YouTube Search" thumbnails
+      
+      - name: Create directories
+        run: |
+          mkdir -p "YouTube Search" thumbnails
+      
+      - name: Search and download thumbnails
+        run: |
+          SEARCH="${{ github.event.inputs.search_query }}"
+          MAX="${{ github.event.inputs.max_results }}"
+          
+          CMD="yt-dlp \"ytsearch${MAX}:${SEARCH}\" --dump-json --skip-download"
+          if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
+            CMD="$CMD --cookies ~/.cache/yt-dlp/youtube/cookies.txt"
+          fi
+          eval "$CMD > \"YouTube Search/results.json\""
+          
+          python3 << 'EOF'
+          import json, urllib.request, os
+          from concurrent.futures import ThreadPoolExecutor
+          
+          with open('YouTube Search/results.json') as f:
+              results = [json.loads(l) for l in f]
+          
+          def download(v):
+              i, v = v
+              vid = v.get('id', str(i))
+              thumb = v.get('thumbnail', '')
+              if thumb:
+                  ext = 'webp' if 'webp' in thumb.lower() else 'jpg'
+                  try:
+                      urllib.request.urlretrieve(thumb, f"thumbnails/{vid}.{ext}")
+                  except: pass
+          
+          with ThreadPoolExecutor(max_workers=10) as ex:
+              list(ex.map(download, enumerate(results)))
+          EOF
+      
+      - name: Generate random filename
+        id: random
+        run: |
+          RANDOM_NAME=$(date +%s%N | md5sum | head -c 10)
+          echo "filename=${RANDOM_NAME}" >> $GITHUB_OUTPUT
+      
+      - name: Generate Markdown
+        run: |
+          SEARCH="${{ github.event.inputs.search_query }}"
+          RANDOM_NAME="${{ steps.random.outputs.filename }}"
+          REPO="${{ github.repository }}"
+          
+          python3 << EOF
+          import json, os, glob
+          
+          search_query = """${{ github.event.inputs.search_query }}"""
+          random_name = """${{ steps.random.outputs.filename }}"""
+          repo = """${{ github.repository }}"""
+          md_file = f"YouTube Search/{random_name}.md"
+          
+          with open('YouTube Search/results.json') as f:
+              results = [json.loads(l) for l in f]
+          
+          for old in glob.glob('YouTube Search/*.md'):
+              if old != md_file:
+                  try: os.remove(old)
+                  except: pass
+          
+          md = f'''# 🎬 YouTube Search: {search_query}
+          
+          **📋 {len(results)} نتیجه پیدا شد**
+          
+          ---
+          
+          '''
+          
+          for v in results:
+              vid = v.get('id', '')
+              title = v.get('title', 'بدون عنوان')
+              channel = v.get('channel', 'نامشخص')
+              url = v.get('webpage_url', '')
+              views = v.get('view_count', 0)
+              views_str = f"{views/1000000:.1f}M" if views>=1000000 else f"{views/1000:.1f}K" if views>=1000 else str(views)
+              dur = v.get('duration', 0)
+              dur_str = f"{dur//60}:{dur%60:02d}"
+              
+              thumb_path = None
+              for ext in ['jpg', 'webp']:
+                  candidate = f"thumbnails/{vid}.{ext}"
+                  if os.path.exists(candidate):
+                      thumb_path = candidate
+                      break
+              
+              if thumb_path:
+                  thumb_url = f"https://raw.githubusercontent.com/{repo}/refs/heads/main/{thumb_path}"
+                  md += f'[![{title}]({thumb_url})]({url})\n\n'
+              else:
+                  md += f'[![{title}](https://placehold.co/640x360?text=No+Thumbnail)]({url})\n\n'
+              
+              md += f'**{title}**\n\n'
+              md += f'👤 {channel} • 👁️ {views_str} views • ⏱️ {dur_str}\n\n'
+              md += f'🔗 [{url}]({url})\n\n'
+              md += '---\n\n'
+          
+          with open(md_file, 'w', encoding='utf-8') as f:
+              f.write(md)
+          
+          with open('YouTube Search/latest.txt', 'w') as f:
+              f.write(f"{random_name}.md")
+          
+          print(f"✅ {len(results)} result | {random_name}.md")
+          EOF
+      
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "YouTube Search/" thumbnails/ -f
+          git commit -m "🔍 Search: ${{ github.event.inputs.search_query }}" || echo "No changes"
+          git push
+      
+      - name: Show link
+        run: |
+          echo "========================================="
+          echo "https://github.com/${{ github.repository }}/blob/main/YouTube%20Search/${{ steps.random.outputs.filename }}.md"
+          echo "========================================="        for v in results:
             vid = v.get('id', '')
             title = v.get('title', 'بدون عنوان')
             channel = v.get('channel', 'نامشخص')
