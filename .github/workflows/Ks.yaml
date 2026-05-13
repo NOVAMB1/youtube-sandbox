@@ -42,6 +42,9 @@ jobs:
           mkdir -p ~/.cache/yt-dlp/youtube
           if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
             echo "${{ secrets.YOUTUBE_COOKIES }}" > ~/.cache/yt-dlp/youtube/cookies.txt
+            echo "✅ Cookies installed"
+          else
+            echo "⚠️ No cookies found"
           fi
       
       - name: Clean old files
@@ -50,14 +53,24 @@ jobs:
           rm -rf "YouTube Search" thumbnails
           mkdir -p "YouTube Search" thumbnails
       
+      - name: Create directories
+        run: |
+          mkdir -p "YouTube Search" thumbnails
+      
       - name: Search and download thumbnails
         run: |
           SEARCH="${{ github.event.inputs.search_query }}"
           MAX="${{ github.event.inputs.max_results }}"
           
+          echo "🔍 Searching: $SEARCH"
+          
           CMD="yt-dlp \"ytsearch${MAX}:${SEARCH}\" --dump-json --skip-download"
-          [ -n "${{ secrets.YOUTUBE_COOKIES }}" ] && CMD="$CMD --cookies ~/.cache/yt-dlp/youtube/cookies.txt"
+          if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
+            CMD="$CMD --cookies ~/.cache/yt-dlp/youtube/cookies.txt"
+          fi
           eval "$CMD > \"YouTube Search/results.json\""
+          
+          echo "✅ Search done"
           
           python3 << 'EOF'
           import json, urllib.request, os
@@ -66,7 +79,9 @@ jobs:
           with open('YouTube Search/results.json') as f:
               results = [json.loads(l) for l in f]
           
-          def download(v):
+          print(f"Downloading {len(results)} thumbnails...")
+          
+          def download_thumbnail(v):
               i, v = v
               vid = v.get('id', str(i))
               thumb = v.get('thumbnail', '')
@@ -74,10 +89,19 @@ jobs:
                   ext = 'webp' if 'webp' in thumb.lower() else 'jpg'
                   try:
                       urllib.request.urlretrieve(thumb, f"thumbnails/{vid}.{ext}")
-                  except: pass
+                      return f"  ✓ {vid}"
+                  except Exception as e:
+                      return f"  ✗ {vid}: {e}"
+              return None
           
-          with ThreadPoolExecutor(max_workers=10) as ex:
-              list(ex.map(download, enumerate(results)))
+          with ThreadPoolExecutor(max_workers=10) as executor:
+              results_dl = list(executor.map(download_thumbnail, enumerate(results)))
+          
+          for r in results_dl:
+              if r:
+                  print(r)
+          
+          print("✅ All thumbnails downloaded")
           EOF
       
       - name: Generate Jupyter Notebook
@@ -110,6 +134,7 @@ jobs:
               channel = v.get('channel', 'نامشخص')
               url = v.get('webpage_url', '')
               views = v.get('view_count', 0)
+              duration = v.get('duration', 0)
               
               if views >= 1000000:
                   views_txt = f"{views/1000000:.1f}M"
@@ -118,6 +143,13 @@ jobs:
               else:
                   views_txt = str(views)
               
+              if duration:
+                  minutes = duration // 60
+                  seconds = duration % 60
+                  dur_txt = f"{minutes}:{seconds:02d}"
+              else:
+                  dur_txt = "?"
+              
               # لینک دایرکت عکس
               thumb_url = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/refs/heads/main/thumbnails/{vid}.jpg"
               
@@ -125,11 +157,10 @@ jobs:
       <img src="{thumb_url}" width="200" style="border-radius: 10px; margin-left: 20px;" onerror="this.src='https://placehold.co/200x120'">
       <div>
           <h3>{title}</h3>
-          <p><strong>{channel}</strong> • 👁️ {views_txt} بازدید</p>
+          <p><strong>{channel}</strong> • 👁️ {views_txt} بازدید • ⏱️ {dur_txt}</p>
           <p>🔗 <a href="{url}" target="_blank">{url}</a></p>
       </div>
   </div>
-  ---
   """
               
               cells.append({
@@ -159,23 +190,28 @@ jobs:
           with open(f'YouTube Search/{RANDOM_NAME}', 'w', encoding='utf-8') as f:
               json.dump(notebook, f, ensure_ascii=False, indent=1)
           
+          # ذخیره نام فایل برای مرحله بعد
           with open('YouTube Search/latest.txt', 'w') as f:
               f.write(RANDOM_NAME)
           
-          print(f"✅ {RANDOM_NAME}")
+          print(f"✅ Notebook generated: {RANDOM_NAME}")
+          print(f"📄 Total results: {len(results)}")
           EOF
       
       - name: Commit and push
         run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add YouTube Search/ thumbnails/
-          git commit -m "Search: ${{ github.event.inputs.search_query }}" || echo "ok"
+          git config user.name "github-actions[bot]"
+          git config.user.email "github-actions[bot]@users.noreply.github.com"
+          git add "YouTube Search/" thumbnails/ -f
+          git commit -m "🔍 YouTube search: ${{ github.event.inputs.search_query }} - $(date '+%Y-%m-%d %H:%M:%S')" || echo "No changes to commit"
           git push
       
-      - name: Show link
+      - name: Show result link
         run: |
           LATEST=$(cat YouTube Search/latest.txt)
           echo "========================================="
-          echo "🔗 https://github.com/${{ github.repository }}/blob/main/YouTube%20Search/${LATEST}"
+          echo "✅ جستجو کامل شد!"
+          echo "========================================="
+          echo "🔗 لینک نتیجه:"
+          echo "https://github.com/${{ github.repository }}/blob/main/YouTube%20Search/${LATEST}"
           echo "========================================="
