@@ -130,13 +130,13 @@ jobs:
           REPO="${{ github.repository }}"
           SORT="${{ github.event.inputs.sort_by }}"
           
-          python3 << EOF
-          import json, os, glob
-          
-          search_query = """${{ github.event.inputs.search_query }}"""
-          random_name = """${{ steps.random.outputs.filename }}"""
-          repo = """${{ github.repository }}"""
-          sort_by = """${{ github.event.inputs.sort_by }}"""
+          python3 - "$SEARCH" "$RANDOM_NAME" "$REPO" "$SORT" << 'PYEOF'
+          import json, os, glob, sys
+
+          search_query = sys.argv[1]
+          random_name = sys.argv[2]
+          repo = sys.argv[3]
+          sort_by = sys.argv[4]
           md_file = f"YouTube Search/{random_name}.md"
           
           with open('YouTube Search/results.json') as f:
@@ -157,24 +157,24 @@ jobs:
           }
           
           md = f'''# 🎬 YouTube Search: {search_query}
-          
-          **📋 {len(results)} نتیجه • مرتب‌سازی: {sort_names.get(sort_by, sort_by)}**
-          
-          ---
-          
-          '''
+
+**📋 {len(results)} نتیجه • مرتب‌سازی: {sort_names.get(sort_by, sort_by)}**
+
+---
+
+'''
           
           for v in results:
               vid = v.get('id', '')
-              title = v.get('title', 'بدون عنوان')
-              channel = v.get('channel', 'نامشخص')
+              title = v.get('title', 'بدون عنوان').replace('|', '-').replace('[', '(').replace(']', ')')
+              channel = v.get('channel', 'نامشخص').replace('|', '-')
               url = v.get('webpage_url', '')
-              views = v.get('view_count', 0)
+              views = v.get('view_count', 0) or 0
               views_str = f"{views/1000000:.1f}M" if views>=1000000 else f"{views/1000:.1f}K" if views>=1000 else str(views)
-              likes = v.get('like_count', 0)
+              likes = v.get('like_count', 0) or 0
               likes_str = f"{likes/1000:.1f}K" if likes>=1000 else str(likes)
-              dur = v.get('duration', 0)
-              dur_str = f"{dur//60}:{dur%60:02d}"
+              dur = v.get('duration', 0) or 0
+              dur_str = f"{int(dur)//60}:{int(dur)%60:02d}"
               
               thumb_path = None
               for ext in ['jpg', 'webp']:
@@ -201,7 +201,7 @@ jobs:
               f.write(f"{random_name}.md")
           
           print(f"✅ {len(results)} result | {random_name}.md | Sort: {sort_by}")
-          EOF
+          PYEOF
       
       - name: Commit and push
         run: |
