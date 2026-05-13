@@ -9,12 +9,12 @@ on:
         default: 'eminem'
         type: string
       clear_old:
-        description: '🗑 پاک کردن فایل‌های قبلی'
+        description: '🗑 پاک کردن کامل فایل‌های قبلی (عکس‌ها + نتایج)'
         required: false
         default: true
         type: boolean
       max_results:
-        description: '📊 تعداد نتایج'
+        description: '📊 تعداد نتایج (حداکثر ۵۰)'
         required: false
         default: '30'
         type: choice
@@ -32,186 +32,221 @@ jobs:
   search:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Setup yt-dlp
-        uses: AnimMouse/setup-yt-dlp@v3
-      
-      - name: Setup YouTube Cookies
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install yt-dlp
         run: |
-          mkdir -p ~/.cache/yt-dlp/youtube
-          if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
-            echo "${{ secrets.YOUTUBE_COOKIES }}" > ~/.cache/yt-dlp/youtube/cookies.txt
-            echo "✅ Cookies installed"
-          else
-            echo "⚠️ No cookies found"
-          fi
-      
-      - name: Clean old files
+          python -m pip install yt-dlp
+
+      - name: Clean everything if requested
         if: github.event.inputs.clear_old == 'true'
         run: |
-          rm -rf "YouTube Search" thumbnails
-          mkdir -p "YouTube Search" thumbnails
-      
+          rm -rf "YouTube Search"
+          rm -rf thumbnails
+          mkdir -p "YouTube Search"
+          mkdir -p thumbnails
+          echo "✅ تمام فایل‌های قبلی پاک شدن"
+
       - name: Create directories
         run: |
-          mkdir -p "YouTube Search" thumbnails
-      
-      - name: Search and download thumbnails
+          mkdir -p "YouTube Search"
+          mkdir -p thumbnails
+
+      - name: Search YouTube and download thumbnails
         run: |
           SEARCH="${{ github.event.inputs.search_query }}"
-          MAX="${{ github.event.inputs.max_results }}"
+          MAX_RESULTS="${{ github.event.inputs.max_results }}"
           
-          echo "🔍 Searching: $SEARCH"
+          echo "🔍 در حال جستجوی: $SEARCH"
+          echo "📊 حداکثر نتایج: $MAX_RESULTS"
           
-          CMD="yt-dlp \"ytsearch${MAX}:${SEARCH}\" --dump-json --skip-download"
-          if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
-            CMD="$CMD --cookies ~/.cache/yt-dlp/youtube/cookies.txt"
-          fi
-          eval "$CMD > \"YouTube Search/results.json\""
+          rm -f "YouTube Search/results.json"
           
-          echo "✅ Search done"
+          yt-dlp "ytsearch${MAX_RESULTS}:${SEARCH}" \
+            --dump-json \
+            --skip-download \
+            > "YouTube Search/results.json"
           
-          python3 << 'EOF'
-          import json, urllib.request, os
+          echo "✅ جستجو انجام شد"
+          
+          python3 << EOF
+          import json
+          import urllib.request
+          import os
           from concurrent.futures import ThreadPoolExecutor
           
-          with open('YouTube Search/results.json') as f:
-              results = [json.loads(l) for l in f]
+          with open('YouTube Search/results.json', 'r', encoding='utf-8') as f:
+              results = [json.loads(line) for line in f]
           
-          print(f"Downloading {len(results)} thumbnails...")
+          print(f"📥 دانلود {len(results)} تامنیل...")
           
-          def download_thumbnail(v):
-              i, v = v
-              vid = v.get('id', str(i))
-              thumb = v.get('thumbnail', '')
-              if thumb:
-                  ext = 'webp' if 'webp' in thumb.lower() else 'jpg'
+          def download_thumbnail(video):
+              i, video = video
+              thumbnail_url = video.get('thumbnail', '')
+              video_id = video.get('id', str(i))
+              
+              if thumbnail_url:
                   try:
-                      urllib.request.urlretrieve(thumb, f"thumbnails/{vid}.{ext}")
-                      return f"  ✓ {vid}"
+                      url_lower = thumbnail_url.lower()
+                      if 'webp' in url_lower:
+                          ext = 'webp'
+                      elif 'png' in url_lower:
+                          ext = 'png'
+                      else:
+                          ext = 'jpg'
+                      
+                      filename = f"thumbnails/{video_id}.{ext}"
+                      urllib.request.urlretrieve(thumbnail_url, filename)
+                      return f"  ✓ دانلود: {filename}"
                   except Exception as e:
-                      return f"  ✗ {vid}: {e}"
+                      return f"  ✗ خطا برای ویدیو {i}: {e}"
               return None
           
           with ThreadPoolExecutor(max_workers=10) as executor:
               results_dl = list(executor.map(download_thumbnail, enumerate(results)))
           
-          for r in results_dl:
-              if r:
-                  print(r)
+          for result in results_dl:
+              if result:
+                  print(result)
           
-          print("✅ All thumbnails downloaded")
+          print("✅ همه تامنیل‌ها دانلود شدن")
           EOF
-      
-      - name: Generate Jupyter Notebook
+
+      - name: Generate random filename for HTML
+        id: random
+        run: |
+          RANDOM_NAME=$(date +%s%N | md5sum | head -c 10)
+          echo "filename=${RANDOM_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Generate HTML page
         run: |
           SEARCH="${{ github.event.inputs.search_query }}"
-          RANDOM_NAME="search_$(date +%s).ipynb"
+          RANDOM_NAME="${{ steps.random.outputs.filename }}"
           GITHUB_USER="${{ github.repository_owner }}"
           REPO_NAME="${{ github.event.repository.name }}"
           
           python3 << EOF
-          import json, os
+          import json
+          import os
+          import glob
           
-          with open('YouTube Search/results.json') as f:
-              results = [json.loads(l) for l in f]
+          search_query = "${{ github.event.inputs.search_query }}"
+          random_name = "${{ steps.random.outputs.filename }}"
+          github_user = "${{ github.repository_owner }}"
+          repo_name = "${{ github.event.repository.name }}"
+          html_file = f"YouTube Search/{random_name}.html"
           
-          # ساخت سلول‌های مارک‌دان برای هر ویدیو
-          cells = []
+          with open('YouTube Search/results.json', 'r', encoding='utf-8') as f:
+              results = [json.loads(line) for line in f]
           
-          # سلول عنوان
-          cells.append({
-              "cell_type": "markdown",
-              "metadata": {},
-              "source": [f"# 🎬 YouTube Search: {SEARCH}\\n\\n**{len(results)} نتیجه**\\n\\n---\\n"]
-          })
+          # حذف فایل‌های HTML قدیمی
+          old_htmls = glob.glob('YouTube Search/*.html')
+          for old in old_htmls:
+              if old != html_file:
+                  try:
+                      os.remove(old)
+                      print(f"🗑 حذف فایل قدیمی: {old}")
+                  except:
+                      pass
           
-          # سلول برای هر ویدیو
+          html = f'''<!DOCTYPE html>
+          <html lang="fa" dir="rtl">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>YouTube Search: {search_query}</title>
+              <style>
+                  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                  body {{ background: #0f0f0f; color: #f1f1f1; font-family: system-ui; padding: 20px; }}
+                  .header {{ background: #202020; padding: 15px; border-radius: 12px; margin-bottom: 25px; }}
+                  .header h1 {{ color: #ff0000; font-size: 24px; }}
+                  .results-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }}
+                  .video-card {{ background: #1a1a1a; border-radius: 12px; overflow: hidden; }}
+                  .video-card img {{ width: 100%; aspect-ratio: 16/9; object-fit: cover; }}
+                  .info {{ padding: 12px; }}
+                  .title {{ font-size: 16px; font-weight: 500; margin-bottom: 8px; color: #fff; text-decoration: none; display: block; }}
+                  .channel {{ font-size: 13px; color: #aaa; margin-bottom: 5px; }}
+                  .stats {{ font-size: 12px; color: #888; margin-bottom: 10px; }}
+                  .watch {{ display: inline-block; padding: 6px 12px; background: #3ea6ff; color: #000; border-radius: 18px; font-size: 12px; text-decoration: none; }}
+                  .copy {{ display: inline-block; padding: 6px 12px; background: #383838; color: #fff; border-radius: 18px; font-size: 12px; margin-right: 8px; cursor: pointer; border: none; }}
+              </style>
+          </head>
+          <body>
+              <div class="header">
+                  <h1>🎬 YouTube Search: {search_query}</h1>
+                  <p>📋 {len(results)} نتیجه</p>
+              </div>
+              <div class="results-grid">'''
+          
           for v in results:
               vid = v.get('id', '')
-              title = v.get('title', 'بدون عنوان')
+              title = v.get('title', 'بدون عنوان')[:70]
               channel = v.get('channel', 'نامشخص')
               url = v.get('webpage_url', '')
               views = v.get('view_count', 0)
-              duration = v.get('duration', 0)
+              views = f"{views/1000000:.1f}M" if views>=1000000 else f"{views/1000:.1f}K" if views>=1000 else str(views)
+              dur = v.get('duration', 0)
+              dur = f"{dur//60}:{dur%60:02d}"
               
-              if views >= 1000000:
-                  views_txt = f"{views/1000000:.1f}M"
-              elif views >= 1000:
-                  views_txt = f"{views/1000:.1f}K"
-              else:
-                  views_txt = str(views)
+              thumb_url = f"https://raw.githubusercontent.com/{github_user}/{repo_name}/refs/heads/main/thumbnails/{vid}.jpg"
               
-              if duration:
-                  minutes = duration // 60
-                  seconds = duration % 60
-                  dur_txt = f"{minutes}:{seconds:02d}"
-              else:
-                  dur_txt = "?"
-              
-              # لینک دایرکت عکس
-              thumb_url = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/refs/heads/main/thumbnails/{vid}.jpg"
-              
-              markdown = f"""<div style="display: flex; margin-bottom: 30px; border-bottom: 1px solid #333; padding-bottom: 20px;">
-      <img src="{thumb_url}" width="200" style="border-radius: 10px; margin-left: 20px;" onerror="this.src='https://placehold.co/200x120'">
-      <div>
-          <h3>{title}</h3>
-          <p><strong>{channel}</strong> • 👁️ {views_txt} بازدید • ⏱️ {dur_txt}</p>
-          <p>🔗 <a href="{url}" target="_blank">{url}</a></p>
-      </div>
-  </div>
-  """
-              
-              cells.append({
-                  "cell_type": "markdown",
-                  "metadata": {},
-                  "source": [markdown]
-              })
+              html += f'''
+                  <div class="video-card">
+                      <img src="{thumb_url}" onerror="this.src='https://placehold.co/320x180'">
+                      <div class="info">
+                          <a href="{url}" target="_blank" class="title">{title}</a>
+                          <div class="channel">{channel}</div>
+                          <div class="stats">👁️ {views} • ⏱️ {dur}</div>
+                          <div>
+                              <a href="{url}" target="_blank" class="watch">▶ تماشا</a>
+                              <button class="copy" onclick="copyUrl('{url}')">📋 کپی</button>
+                          </div>
+                      </div>
+                  </div>'''
           
-          # ساخت فایل Notebook
-          notebook = {
-              "cells": cells,
-              "metadata": {
-                  "kernelspec": {
-                      "display_name": "Python 3",
-                      "language": "python",
-                      "name": "python3"
-                  },
-                  "language_info": {
-                      "name": "python",
-                      "version": "3.11.0"
+          html += '''
+              </div>
+              <script>
+                  function copyUrl(url) {
+                      navigator.clipboard.writeText(url);
+                      alert('✅ لینک کپی شد!');
                   }
-              },
-              "nbformat": 4,
-              "nbformat_minor": 5
-          }
+              </script>
+          </body>
+          </html>'''
           
-          with open(f'YouTube Search/{RANDOM_NAME}', 'w', encoding='utf-8') as f:
-              json.dump(notebook, f, ensure_ascii=False, indent=1)
+          with open(html_file, 'w', encoding='utf-8') as f:
+              f.write(html)
           
-          # ذخیره نام فایل برای مرحله بعد
           with open('YouTube Search/latest.txt', 'w') as f:
-              f.write(RANDOM_NAME)
+              f.write(f"{random_name}.html")
           
-          print(f"✅ Notebook generated: {RANDOM_NAME}")
-          print(f"📄 Total results: {len(results)}")
+          print(f"✅ HTML generated: {html_file}")
+          print(f"📄 تعداد نتایج: {len(results)}")
           EOF
-      
+
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
-          git config.user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "YouTube Search/" thumbnails/ -f
           git commit -m "🔍 YouTube search: ${{ github.event.inputs.search_query }} - $(date '+%Y-%m-%d %H:%M:%S')" || echo "No changes to commit"
           git push
-      
+          
       - name: Show result link
         run: |
-          LATEST=$(cat YouTube Search/latest.txt)
+          RANDOM_NAME="${{ steps.random.outputs.filename }}"
           echo "========================================="
           echo "✅ جستجو کامل شد!"
           echo "========================================="
           echo "🔗 لینک نتیجه:"
-          echo "https://github.com/${{ github.repository }}/blob/main/YouTube%20Search/${LATEST}"
+          echo "https://github.com/${{ github.repository }}/blob/main/YouTube%20Search/${RANDOM_NAME}.html"
           echo "========================================="
