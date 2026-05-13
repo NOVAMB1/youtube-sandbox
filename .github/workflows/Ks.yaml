@@ -6,7 +6,6 @@ on:
       search_query:
         description: '🔍 چی رو سرچ کنم؟'
         required: true
-        default: ''
         type: string
       sort_by:
         description: '📊 مرتب‌سازی بر اساس'
@@ -35,6 +34,187 @@ on:
           - '20'
           - '30'
           - '40'
+          - '50'
+
+permissions:
+  contents: write
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup yt-dlp
+        uses: AnimMouse/setup-yt-dlp@v3
+      
+      - name: Setup YouTube Cookies
+        run: |
+          mkdir -p ~/.cache/yt-dlp/youtube
+          if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
+            echo "${{ secrets.YOUTUBE_COOKIES }}" > ~/.cache/yt-dlp/youtube/cookies.txt
+            echo "✅ Cookies installed"
+          else
+            echo "⚠️ No cookies found"
+          fi
+      
+      - name: Clean old files
+        if: github.event.inputs.clear_old == 'true'
+        run: |
+          rm -rf "YouTube Search"
+          mkdir -p "YouTube Search/thumbnails"
+      
+      - name: Create directories
+        run: |
+          mkdir -p "YouTube Search/thumbnails"
+      
+      - name: Search and download thumbnails
+        run: |
+          SEARCH="${{ github.event.inputs.search_query }}"
+          MAX="${{ github.event.inputs.max_results }}"
+          SORT="${{ github.event.inputs.sort_by }}"
+          
+          case "$SORT" in
+            views) SORT_PARAM="+view_count" ;;
+            likes) SORT_PARAM="+like_count" ;;
+            date_newest) SORT_PARAM="+upload_date" ;;
+            date_oldest) SORT_PARAM="-upload_date" ;;
+            rating) SORT_PARAM="+average_rating" ;;
+            *) SORT_PARAM="" ;;
+          esac
+          
+          if [ -n "$SORT_PARAM" ]; then
+            CMD="yt-dlp \"ytsearch${MAX}:${SEARCH}\" --dump-json --skip-download --format-sort \"$SORT_PARAM\""
+          else
+            CMD="yt-dlp \"ytsearch${MAX}:${SEARCH}\" --dump-json --skip-download"
+          fi
+          
+          if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
+            CMD="$CMD --cookies ~/.cache/yt-dlp/youtube/cookies.txt"
+          fi
+          
+          eval "$CMD > \"YouTube Search/results.json\""
+          
+          python3 << 'EOF'
+          import json, urllib.request, os
+          from concurrent.futures import ThreadPoolExecutor
+          
+          with open('YouTube Search/results.json') as f:
+              results = [json.loads(l) for l in f]
+          
+          def download(v):
+              i, v = v
+              vid = v.get('id', str(i))
+              thumb = v.get('thumbnail', '')
+              if thumb:
+                  ext = 'webp' if 'webp' in thumb.lower() else 'jpg'
+                  try:
+                      urllib.request.urlretrieve(thumb, f"YouTube Search/thumbnails/{vid}.{ext}")
+                  except: pass
+          
+          with ThreadPoolExecutor(max_workers=10) as ex:
+              list(ex.map(download, enumerate(results)))
+          EOF
+      
+      - name: Generate random filename
+        id: random
+        run: |
+          RANDOM_NAME=$(date +%s%N | md5sum | head -c 10)
+          echo "filename=${RANDOM_NAME}" >> $GITHUB_OUTPUT
+      
+      - name: Generate Markdown
+        run: |
+          SEARCH="${{ github.event.inputs.search_query }}"
+          RANDOM_NAME="${{ steps.random.outputs.filename }}"
+          REPO="${{ github.repository }}"
+          SORT="${{ github.event.inputs.sort_by }}"
+          
+          python3 - "$SEARCH" "$RANDOM_NAME" "$REPO" "$SORT" << 'PYEOF'
+          import json, os, glob, sys
+
+          search_query = sys.argv[1]
+          random_name = sys.argv[2]
+          repo = sys.argv[3]
+          sort_by = sys.argv[4]
+          md_file = f"YouTube Search/{random_name}.md"
+          
+          with open('YouTube Search/results.json') as f:
+              results = [json.loads(l) for l in f]
+          
+          for old in glob.glob('YouTube Search/*.md'):
+              if old != md_file:
+                  try: os.remove(old)
+                  except: pass
+          
+          sort_names = {
+              'relevance': 'مرتبط‌ترین',
+              'views': 'بیشترین بازدید',
+              'likes': 'بیشترین لایک',
+              'date_newest': 'جدیدترین',
+              'date_oldest': 'قدیمی‌ترین',
+              'rating': 'بیشترین امتیاز'
+          }
+          
+          md = f'''# 🎬 YouTube Search: {search_query}
+
+**📋 {len(results)} نتیجه • مرتب‌سازی: {sort_names.get(sort_by, sort_by)}**
+
+---
+
+'''
+          
+          for v in results:
+              vid = v.get('id', '')
+              title = v.get('title', 'بدون عنوان').replace('|', '-').replace('[', '(').replace(']', ')')
+              channel = v.get('channel', 'نامشخص').replace('|', '-')
+              url = v.get('webpage_url', '')
+              views = v.get('view_count', 0) or 0
+              views_str = f"{views/1000000:.1f}M" if views>=1000000 else f"{views/1000:.1f}K" if views>=1000 else str(views)
+              likes = v.get('like_count', 0) or 0
+              likes_str = f"{likes/1000:.1f}K" if likes>=1000 else str(likes)
+              dur = v.get('duration', 0) or 0
+              dur_str = f"{int(dur)//60}:{int(dur)%60:02d}"
+              
+              thumb_path = None
+              for ext in ['jpg', 'webp']:
+                  candidate = f"YouTube Search/thumbnails/{vid}.{ext}"
+                  if os.path.exists(candidate):
+                      thumb_path = candidate
+                      break
+              
+              if thumb_path:
+                  thumb_url = f"https://raw.githubusercontent.com/{repo}/refs/heads/main/{thumb_path}"
+                  md += f'[![{title}]({thumb_url})]({url})\n\n'
+              else:
+                  md += f'[![{title}](https://placehold.co/640x360?text=No+Thumbnail)]({url})\n\n'
+              
+              md += f'**{title}**\n\n'
+              md += f'👤 {channel} • 👁️ {views_str} views • 👍 {likes_str} likes • ⏱️ {dur_str}\n\n'
+              md += f'🔗 [{url}]({url})\n\n'
+              md += '---\n\n'
+          
+          with open(md_file, 'w', encoding='utf-8') as f:
+              f.write(md)
+          
+          with open('YouTube Search/latest.txt', 'w') as f:
+              f.write(f"{random_name}.md")
+          
+          print(f"✅ {len(results)} result | {random_name}.md | Sort: {sort_by}")
+          PYEOF
+      
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "YouTube Search/" -f
+          git commit -m "🔍 Search: ${{ github.event.inputs.search_query }} (Sort: ${{ github.event.inputs.sort_by }})" || echo "No changes"
+          git push
+      
+      - name: Show link
+        run: |
+          echo "========================================="
+          echo "https://github.com/${{ github.repository }}/blob/main/YouTube%20Search/${{ steps.random.outputs.filename }}.md"
+          echo "========================================="          - '40'
           - '50'
 
 permissions:
